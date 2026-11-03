@@ -1,0 +1,127 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Create Android project and copy game files
+        run: |
+          npx cap add android
+          npx cap sync android
+
+      - name: Make the app fullscreen and landscape (hide status and navigation bars)
+        run: |
+          cat > android/app/src/main/java/com/example/crownandbanner/MainActivity.java <<'JAVA'
+          package com.example.crownandbanner;
+
+          import android.content.pm.ActivityInfo;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.view.Window;
+          import android.view.WindowManager;
+          import androidx.core.view.WindowCompat;
+          import androidx.core.view.WindowInsetsCompat;
+          import androidx.core.view.WindowInsetsControllerCompat;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                  hideSystemBars();
+              }
+
+              @Override
+              public void onWindowFocusChanged(boolean hasFocus) {
+                  super.onWindowFocusChanged(hasFocus);
+                  if (hasFocus) hideSystemBars();
+              }
+
+              private void hideSystemBars() {
+                  Window window = getWindow();
+                  if (Build.VERSION.SDK_INT >= 28) {
+                      window.getAttributes().layoutInDisplayCutoutMode =
+                          WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                  }
+                  WindowCompat.setDecorFitsSystemWindows(window, false);
+                  WindowInsetsControllerCompat c = WindowCompat.getInsetsController(window, window.getDecorView());
+                  c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                  c.hide(WindowInsetsCompat.Type.systemBars());
+              }
+          }
+          JAVA
+          test -s android/app/src/main/java/com/example/crownandbanner/MainActivity.java
+
+      - name: Set version number and signing key
+        run: |
+          VC=${{ github.run_number }}
+          VN=$(node -p "require('./package.json').version")
+          sed -i "s/versionCode[ =]*[0-9]\+/versionCode $VC/; s/versionName[ =]*\"[^\"]*\"/versionName \"$VN\"/" android/app/build.gradle
+          grep -q "versionCode $VC" android/app/build.gradle
+          python3 - <<'PY'
+          p = 'android/app/build.gradle'
+          s = open(p).read()
+          block = """android {
+              signingConfigs {
+                  debug {
+                      storeFile rootProject.file('../keystore/crown-and-banner.keystore')
+                      storeType 'pkcs12'
+                      storePassword 'android'
+                      keyAlias 'crownandbanner'
+                      keyPassword 'android'
+                  }
+              }
+          """
+          assert 'android {\n' in s
+          open(p, 'w').write(s.replace('android {\n', block, 1))
+          PY
+
+      - name: Generate app icon and splash screen
+        run: npx capacitor-assets generate --android --splashBackgroundColor '#1b1812' --splashBackgroundColorDark '#1b1812'
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - name: Name the APK after the version in package.json
+        run: |
+          VN=$(node -p "require('./package.json').version")
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/Crown-and-Banner-v${VN}.apk"
+          echo "VERSION=$VN" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Crown-and-Banner-v${{ env.VERSION }}
+          path: dist/Crown-and-Banner-v${{ env.VERSION }}.apk
+
+      - name: Attach APK to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Crown-and-Banner-v${{ env.VERSION }}.apk
