@@ -101,7 +101,8 @@ jobs:
           PY
 
       - name: Generate app icon and splash screen
-        run: npx capacitor-assets generate --android --splashBackgroundColor '#1b1812' --splashBackgroundColorDark '#1b1812'
+        continue-on-error: true
+        run: npx --yes @capacitor/assets@3.0.5 generate --android --splashBackgroundColor '#1b1812' --splashBackgroundColorDark '#1b1812'
 
       - name: Build debug APK
         working-directory: android
